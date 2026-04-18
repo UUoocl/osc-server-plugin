@@ -278,8 +278,6 @@ void OscManager::HttpListenerThread() {
             buffer[bytesRead] = '\0';
             std::string request(buffer);
             
-            blog(LOG_DEBUG, "[OSC Server] HTTP Bridge received %d bytes", bytesRead);
-
             if (request.find("OPTIONS") != std::string::npos) {
                 // Handle CORS preflight
                 const char* corsResponse = "HTTP/1.1 204 No Content\r\n"
@@ -290,11 +288,9 @@ void OscManager::HttpListenerThread() {
                 send(clientSocket, corsResponse, strlen(corsResponse), 0);
             }
             else if (request.find("POST /send") != std::string::npos) {
-                blog(LOG_DEBUG, "[OSC Server] HTTP Bridge matched POST /send");
                 size_t bodyPos = request.find("\r\n\r\n");
                 if (bodyPos != std::string::npos) {
                     std::string body = request.substr(bodyPos + 4);
-                    blog(LOG_DEBUG, "[OSC Server] HTTP Bridge body: %s", body.c_str());
                     
                     obs_data_t* data = obs_data_create_from_json(body.c_str());
                     if (data) {
@@ -303,19 +299,13 @@ void OscManager::HttpListenerThread() {
                         obs_data_array_t* args = obs_data_get_array(data, "args");
                         
                         if (addr && fmt) {
-                            blog(LOG_INFO, "[OSC Server] HTTP Bridge forwarding: %s %s", addr, fmt);
+                            blog(LOG_INFO, "[OSC Server] Forwarding: %s %s", addr, fmt);
                             SendOscRaw(addr, fmt, args);
-                        } else {
-                            blog(LOG_WARNING, "[OSC Server] HTTP Bridge missing addr or fmt in JSON");
                         }
                         
                         obs_data_array_release(args);
                         obs_data_release(data);
-                    } else {
-                        blog(LOG_ERROR, "[OSC Server] HTTP Bridge failed to parse JSON body");
                     }
-                } else {
-                    blog(LOG_WARNING, "[OSC Server] HTTP Bridge could not find end of headers");
                 }
                 
                 const char* response = "HTTP/1.1 200 OK\r\n"
@@ -325,7 +315,6 @@ void OscManager::HttpListenerThread() {
                                      "Connection: close\r\n\r\nok";
                 send(clientSocket, response, strlen(response), 0);
             } else {
-                blog(LOG_DEBUG, "[OSC Server] HTTP Bridge ignored request: %s", request.substr(0, 50).c_str());
                 const char* response = "HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n";
                 send(clientSocket, response, strlen(response), 0);
             }

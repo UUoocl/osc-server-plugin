@@ -25,7 +25,6 @@
     <div class="container">
         <div class="stat-bar">
             <h2>OSC Router Monitor</h2>
-            <div class="stat" id="rate">Rate: 0 msgs/sec</div>
         </div>
         
         <div class="log" id="log">Waiting for OSC messages...</div>
@@ -73,51 +72,6 @@
             }
         });
 
-        // Deep scan for OBS API
-        function findObsApi() {
-            // 1. Standard locations
-            if (window.obsstudio) return window.obsstudio;
-            if (window.obsStudio) return window.obsStudio;
-            if (typeof obsstudio !== 'undefined') return obsstudio;
-            
-            // 2. Scan window for likely candidates
-            for (let key in window) {
-                if (key.toLowerCase().includes('obs') && typeof window[key] === 'object' && window[key] !== null) {
-                    if (window[key].call || window[key].on) return window[key];
-                }
-            }
-            return null;
-        }
-
-        function updateApiStatus() {
-            const api = findObsApi();
-            const statusEl = document.getElementById('api-status') || document.createElement('div');
-            statusEl.id = 'api-status';
-            statusEl.style.fontSize = "12px";
-            statusEl.style.marginTop = "10px";
-            
-            if (api) {
-                const methods = Object.keys(api).filter(k => typeof api[k] === 'function');
-                statusEl.style.color = "#a6e3a1";
-                statusEl.innerHTML = `✓ OBS API Found<br>` +
-                                 `<small style="color: #9399b2">Methods: ${methods.join(', ') || 'none'}</small>`;
-            } else {
-                statusEl.style.color = "#f38ba8";
-                statusEl.innerHTML = `✗ OBS API NOT detected. <button onclick="updateApiStatus()" style="padding: 2px 6px; font-size: 10px;">Retry Scan</button>`;
-            }
-            
-            const bar = document.querySelector('.stat-bar');
-            if (bar && !document.getElementById('api-status')) bar.appendChild(statusEl);
-        }
-
-        window.addEventListener('obsstudioReady', () => {
-            console.log("obsstudioReady event fired!");
-            updateApiStatus();
-        });
-
-        window.addEventListener('load', () => {
-            setTimeout(updateApiStatus, 1000);
-        });
 
         // Handle Outbound OSC via HTTP Bridge
         async function sendOsc() {
