@@ -13,115 +13,143 @@
         .log-args { color: #fab387; }
         .stat-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; }
         .stat { background: rgba(166, 227, 161, 0.1); color: #a6e3a1; padding: 4px 12px; border-radius: 20px; font-weight: bold; font-size: 14px; border: 1px solid rgba(166, 227, 161, 0.2); }
-        .input-group { display: flex; gap: 8px; margin-top: 20px; background: rgba(255,255,255,0.03); padding: 12px; border-radius: 8px; }
+        .input-group { display: flex; flex-direction: column; gap: 8px; margin-top: 20px; background: rgba(255,255,255,0.03); padding: 12px; border-radius: 8px; }
+        .row { display: flex; gap: 8px; }
         input { background: #1e1e2e; border: 1px solid #45475a; color: white; padding: 10px; border-radius: 6px; flex: 1; outline: none; }
         input:focus { border-color: #89b4fa; }
         button { background: #89b4fa; color: #11111b; border: none; padding: 10px 20px; border-radius: 6px; font-weight: bold; cursor: pointer; transition: transform 0.1s, background 0.2s; }
         button:hover { background: #b4befe; }
         button:active { transform: scale(0.95); }
+        .status { font-size: 12px; color: #9399b2; margin-bottom: 10px; }
+        .client-list { margin-top: 10px; font-size: 12px; color: #94e2d5; }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="stat-bar">
-            <h2>OSC Router Monitor</h2>
+            <h2>OSC Monitor</h2>
+            <div id="ws-status" class="stat">WS: Disconnected</div>
         </div>
+        
+        <div id="server-info" class="status">Waiting for server details...</div>
+        <div id="client-info" class="client-list"></div>
         
         <div class="log" id="log">Waiting for OSC messages...</div>
         
         <div class="input-group">
-            <input id="addr" placeholder="Address (e.g. /obs/test)" value="/obs/test">
-            <input id="fmt" placeholder="Format (i, f, s)" value="f" style="max-width: 80px;">
-            <input id="args" placeholder="Args JSON (e.g. [0.5])" value="[0.5]">
-            <button onclick="sendOsc()">Send OSC</button>
+            <div class="row">
+                <input id="addr" placeholder="Address (e.g. /obs/test)" value="/obs/test">
+                <input id="fmt" placeholder="Format (i, f, s)" value="f" style="max-width: 80px;">
+                <input id="target" placeholder="Target (Name or Port)" value="">
+            </div>
+            <div class="row">
+                <input id="args" placeholder="Args JSON (e.g. [0.5])" value="[0.5]">
+                <button onclick="sendOsc()">Send via WS</button>
+            </div>
         </div>
     </div>
 
     <script>
-        let msgCount = 0;
-        let totalMsgs = 0;
+        let ws = null;
+        let serverDetails = null;
         const logEl = document.getElementById('log');
 
-        // Handle Inbound OSC from Plugin
+        function appendLog(msg, color = null) {
+            const item = document.createElement('div');
+            item.className = 'log-item';
+            if (color) item.style.color = color;
+            item.textContent = msg;
+            logEl.prepend(item);
+            if (logEl.childNodes.length > 100) logEl.removeChild(logEl.lastChild);
+        }
+
+        function connect(port) {
+            if (ws) ws.close();
+            
+            const url = `ws://127.0.0.1:${port}/ws`;
+            ws = new WebSocket(url);
+            
+            ws.onopen = () => {
+                document.getElementById('ws-status').textContent = `WS: Connected (${port})`;
+                document.getElementById('ws-status').style.color = '#a6e3a1';
+                appendLog(`Connected to WebSocket on port ${port}`, '#a6e3a1');
+            };
+            
+            ws.onclose = () => {
+                document.getElementById('ws-status').textContent = "WS: Disconnected";
+                document.getElementById('ws-status').style.color = '#f38ba8';
+                appendLog("WebSocket disconnected", '#f38ba8');
+                // Retry after 5s
+                setTimeout(() => {
+                    if (serverDetails) connect(serverDetails.port);
+                }, 5000);
+            };
+
+            ws.onerror = (err) => {
+                console.error("WS Error:", err);
+            };
+        }
+
+        // Handle Inbound OSC via OBS API Emit
         window.addEventListener('osc_message', (e) => {
-            console.log("OSC Event Received:", e.detail);
-            msgCount++;
-            totalMsgs++;
             const data = e.detail;
+            const timestamp = new Date().toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
             
             const item = document.createElement('div');
             item.className = 'log-item';
-            
-            const timestamp = new Date().toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
-            
-            // Safety check for data fields
-            const client = data.client || "Unknown";
-            const addr = data.address || "/unknown";
-            const args = data.args || [];
-
             item.innerHTML = `<span style="color: #6c7086">[${timestamp}]</span> ` +
-                           `<span class="log-client">[${client}]</span> ` +
-                           `<span class="log-addr">${addr}</span> ` +
-                           `<span class="log-args">${JSON.stringify(args)}</span>`;
+                           `<span class="log-client">[${data.client || '?'}]</span> ` +
+                           `<span class="log-addr">${data.address || '/'}</span> ` +
+                           `<span class="log-args">${JSON.stringify(data.args || [])}</span>`;
             
             logEl.prepend(item);
+            if (logEl.childNodes.length > 100) logEl.removeChild(logEl.lastChild);
+        });
+
+        // Handle Server Details
+        window.addEventListener('osc_server_details', (e) => {
+            serverDetails = e.detail;
+            document.getElementById('server-info').textContent = `Server: ${serverDetails.ip}:${serverDetails.port}`;
             
-            // Performance management: Limit log size
-            if (logEl.childNodes.length > 100) {
-                logEl.removeChild(logEl.lastChild);
+            const clientNames = serverDetails.clients.map(c => `${c.name} (${c.portOut})`).join(', ');
+            document.getElementById('client-info').textContent = `Devices: ${clientNames || 'None'}`;
+            
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                connect(serverDetails.port);
             }
         });
 
 
-        // Handle Outbound OSC via HTTP Bridge
-        async function sendOsc() {
+        function sendOsc() {
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                appendLog("Error: WebSocket not connected", '#f38ba8');
+                return;
+            }
+
             const addr = document.getElementById('addr').value;
             const fmt = document.getElementById('fmt').value;
+            const target = document.getElementById('target').value;
             const argsRaw = document.getElementById('args').value;
             
             let args = [];
             try {
                 args = JSON.parse(argsRaw);
             } catch (e) {
-                console.error("Invalid JSON in args field");
+                appendLog("Error: Invalid JSON in args", '#f38ba8');
                 return;
             }
 
-            try {
-                console.log("Sending OSC via HTTP Bridge:", { addr, fmt, args });
-                const response = await fetch('http://127.0.0.1:12347/send', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        address: addr,
-                        format: fmt,
-                        args: args.map(v => ({ value: v }))
-                    })
-                });
+            const payload = {
+                address: addr,
+                format: fmt,
+                args: args.map(v => ({ value: v }))
+            };
+            
+            if (target) payload.target = target;
 
-                if (response.ok) {
-                    const successLine = document.createElement('div');
-                    successLine.style.color = '#a6e3a1';
-                    successLine.style.fontSize = '12px';
-                    successLine.textContent = `Sent: ${addr} ${argsRaw}`;
-                    logEl.prepend(successLine);
-                } else {
-                    throw new Error("Bridge response not OK");
-                }
-            } catch (err) {
-                console.error("HTTP Bridge error:", err);
-                const errorLine = document.createElement('div');
-                errorLine.style.color = '#f38ba8';
-                errorLine.textContent = "Error: OSC HTTP Bridge not found. Is the plugin running?";
-                logEl.prepend(errorLine);
-            }
+            ws.send(JSON.stringify(payload));
+            appendLog(`Sent to ${target || 'All'}: ${addr} ${argsRaw}`, '#89b4fa');
         }
-
-        // Stats tracking (Messages Per Second)
-        setInterval(() => {
-            document.getElementById('rate').textContent = `Rate: ${msgCount} msgs/sec (Total: ${totalMsgs})`;
-            msgCount = 0;
-        }, 1000);
     </script>
 </body>
 </html>

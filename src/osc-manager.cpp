@@ -1,10 +1,14 @@
 #include "osc-manager.hpp"
 #include "thirdparty/tinyosc.h"
+#include "thirdparty/mongoose.h"
 #include <obs-module.h>
 #include <obs.h>
+#include <util/platform.h>
 
 #include <iostream>
 #include <sstream>
+#include <thread>
+#include <atomic>
 
 #if defined(_WIN32) || defined(_WIN64)
 #include <winsock2.h>
@@ -26,6 +30,40 @@
 #define SOCKET_ERROR -1
 #endif
 
+// Mongoose event handler
+static void mongoose_fn(struct mg_connection *c, int ev, void *ev_data) {
+    if (ev == MG_EV_HTTP_MSG) {
+        struct mg_http_message *hm = (struct mg_http_message *)ev_data;
+        if (mg_match(hm->uri, mg_str("/ws"), NULL)) {
+            mg_ws_upgrade(c, hm, NULL);
+        } else if (mg_match(hm->uri, mg_str("/health"), NULL)) {
+            mg_http_reply(c, 200, "", "ok");
+        }
+    } else if (ev == MG_EV_WS_MSG) {
+        struct mg_ws_message *wm = (struct mg_ws_message *)ev_data;
+        std::string msg(wm->data.buf, wm->data.len);
+        
+        obs_data_t* data = obs_data_create_from_json(msg.c_str());
+        if (data) {
+            const char* address = obs_data_get_string(data, "address");
+            const char* format = obs_data_get_string(data, "format");
+            obs_data_array_t* args = obs_data_get_array(data, "args");
+            const char* target = obs_data_get_string(data, "target");
+            
+            if (address && format) {
+                if (target && *target) {
+                    GetOscManager().SendOscToTarget(target, address, format, args);
+                } else {
+                    GetOscManager().SendOscRaw(address, format, args);
+                }
+            }
+            
+            obs_data_array_release(args);
+            obs_data_release(data);
+        }
+    }
+}
+
 OscManager::OscManager() {
 #if defined(_WIN32) || defined(_WIN64)
     WSADATA wsaData;
@@ -35,6 +73,7 @@ OscManager::OscManager() {
 
 OscManager::~OscManager() {
     StopServer();
+    StopMongoose();
 #if defined(_WIN32) || defined(_WIN64)
     WSACleanup();
 #endif
@@ -67,40 +106,18 @@ void OscManager::StartServer() {
     serverAddr.sin_addr.s_addr = inet_addr(serverIp.c_str());
 
     if (bind(serverSocket, (struct sockaddr*)&serverAddr, sizeof(serverAddr)) == SOCKET_ERROR) {
-        blog(LOG_WARNING, "[OSC Server] Failed to bind to %s:%d (Port may be in use by another script)", serverIp.c_str(), serverPort);
+        blog(LOG_WARNING, "[OSC Server] Failed to bind to %s:%d (Port may be in use)", serverIp.c_str(), serverPort);
 #if defined(_WIN32) || defined(_WIN64)
         closesocket(serverSocket);
 #else
         close(serverSocket);
 #endif
-        serverSocket = -1;
+        serverSocket = INVALID_SOCKET;
         return;
     }
 
     running = true;
     listenerThread = std::thread(&OscManager::ListenerThread, this);
-
-    // Start HTTP Bridge
-    httpSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (httpSocket != INVALID_SOCKET) {
-        int opt = 1;
-        setsockopt(httpSocket, SOL_SOCKET, SO_REUSEADDR, (char*)&opt, sizeof(opt));
-        
-        sockaddr_in httpAddr;
-        httpAddr.sin_family = AF_INET;
-        httpAddr.sin_addr.s_addr = inet_addr(serverIp.c_str());
-        httpAddr.sin_port = htons(httpPort);
-        
-        if (bind(httpSocket, (struct sockaddr*)&httpAddr, sizeof(httpAddr)) != SOCKET_ERROR) {
-            listen(httpSocket, 5);
-            httpThread = std::thread(&OscManager::HttpListenerThread, this);
-            blog(LOG_INFO, "[OSC Server] HTTP Bridge started on %s:%d", serverIp.c_str(), httpPort);
-        } else {
-            blog(LOG_ERROR, "[OSC Server] Failed to bind HTTP Bridge to port %d", httpPort);
-            close(httpSocket);
-            httpSocket = INVALID_SOCKET;
-        }
-    }
     blog(LOG_INFO, "[OSC Server] Started on %s:%d", serverIp.c_str(), serverPort);
 }
 
@@ -117,18 +134,63 @@ void OscManager::StopServer() {
         serverSocket = INVALID_SOCKET;
     }
 
-    if (httpSocket != INVALID_SOCKET) {
-#if defined(_WIN32) || defined(_WIN64)
-        closesocket(httpSocket);
-#else
-        close(httpSocket);
-#endif
-        httpSocket = INVALID_SOCKET;
-    }
-
     if (listenerThread.joinable()) listenerThread.join();
-    if (httpThread.joinable()) httpThread.join();
     blog(LOG_INFO, "[OSC Server] Stopped");
+}
+
+void OscManager::StartMongoose(int port) {
+    if (mongooseRunning) StopMongoose();
+    
+    mongoosePort = port;
+    mg_mgr_init(&mgr);
+    
+    char url[64];
+    snprintf(url, sizeof(url), "http://127.0.0.1:%d", port);
+    
+    mg_conn = mg_http_listen(&mgr, url, mongoose_fn, NULL);
+    if (!mg_conn) {
+        blog(LOG_ERROR, "[OSC Server] Mongoose failed to listen on %s", url);
+        mg_mgr_free(&mgr);
+        return;
+    }
+    
+    mongooseRunning = true;
+    mongooseThread = std::thread(&OscManager::MongooseThread, this);
+    blog(LOG_INFO, "[OSC Server] Mongoose started on %s", url);
+}
+
+void OscManager::StopMongoose() {
+    if (!mongooseRunning) return;
+    mongooseRunning = false;
+    
+    if (mongooseThread.joinable()) mongooseThread.join();
+    
+    mg_mgr_free(&mgr);
+    blog(LOG_INFO, "[OSC Server] Mongoose stopped");
+}
+
+void OscManager::MongooseThread() {
+    while (mongooseRunning) {
+        mg_mgr_poll(&mgr, 100);
+    }
+}
+
+bool OscManager::IsPortAvailable(int port) {
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock == -1) return false;
+    
+    sockaddr_in addr;
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+    
+    int result = bind(sock, (struct sockaddr*)&addr, sizeof(addr));
+#if defined(_WIN32) || defined(_WIN64)
+    closesocket(sock);
+#else
+    close(sock);
+#endif
+    return result == 0;
 }
 
 void OscManager::AddClient(const OscClient& client) {
@@ -171,8 +233,8 @@ void OscManager::ListenerThread() {
             continue;
         }
 
-        // Identify client
         std::string clientName = "";
+        std::string clientTarget = "All Browser Sources";
         char ipStr[INET_ADDRSTRLEN];
         inet_ntop(AF_INET, &clientAddr.sin_addr, ipStr, INET_ADDRSTRLEN);
         int port = ntohs(clientAddr.sin_port);
@@ -182,6 +244,7 @@ void OscManager::ListenerThread() {
             for (const auto& client : clients) {
                 if (client.ip == ipStr && client.portOut == port) {
                     clientName = client.name;
+                    clientTarget = client.targetSource;
                     break;
                 }
             }
@@ -211,16 +274,13 @@ void OscManager::ListenerThread() {
                 jsonArgs += "]";
                 
                 if (messageCallback) {
-                    messageCallback(clientName, addr, jsonArgs);
+                    messageCallback(clientName, addr, jsonArgs, clientTarget);
                 }
 
                 if (loggingEnabled && logCallback) {
-                    std::string logMsg = "[" + clientName + "] " + addr + " " + jsonArgs;
+                    std::string logMsg = "[" + clientName + "] " + addr + " " + jsonArgs + " -> " + clientTarget;
                     logCallback(logMsg);
                 }
-
-                // Add system log to confirm this plugin received it
-                blog(LOG_INFO, "[OSC Server] Received: %s from %s", addr.c_str(), clientName.c_str());
             }
         } else {
             tosc_message msg;
@@ -239,120 +299,48 @@ void OscManager::ListenerThread() {
                 jsonArgs += "]";
                 
                 if (messageCallback) {
-                    messageCallback(clientName, addr, jsonArgs);
+                    messageCallback(clientName, addr, jsonArgs, clientTarget);
                 }
 
                 if (loggingEnabled && logCallback) {
-                    std::string logMsg = "[" + clientName + "] " + addr + " " + jsonArgs;
+                    std::string logMsg = "[" + clientName + "] " + addr + " " + jsonArgs + " -> " + clientTarget;
                     logCallback(logMsg);
                 }
-
-                // Internal Relay: If message is to /plugin/send, forward it out
-                if (addr == "/plugin/send") {
-                    // Expects: [address, format, arg1, arg2, ...]
-                    // Note: This allows the browser to send OSC OUT via the Python relay
-                    blog(LOG_INFO, "[OSC Server] Internal Relay triggered for %s", addr.c_str());
-                    // Logic to forward will go here or be handled by the browser
-                }
-
-                // Add system log to confirm this plugin received it
-                blog(LOG_INFO, "[OSC Server] Received: %s from %s", addr.c_str(), clientName.c_str());
             }
         }
     }
 }
 
-void OscManager::HttpListenerThread() {
-    while (running) {
-        sockaddr_in clientAddr;
-        socklen_t clientLen = sizeof(clientAddr);
-        int clientSocket = accept(httpSocket, (struct sockaddr*)&clientAddr, &clientLen);
-        if (clientSocket == INVALID_SOCKET) {
-            if (running) std::this_thread::sleep_for(std::chrono::milliseconds(100));
-            continue;
-        }
+void OscManager::SendToAddr(const std::string& ip, int port, const char* buffer, uint32_t len) {
+    int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (sock == INVALID_SOCKET) return;
 
-        char buffer[8192];
-        int bytesRead = recv(clientSocket, buffer, sizeof(buffer) - 1, 0);
-        if (bytesRead > 0) {
-            buffer[bytesRead] = '\0';
-            std::string request(buffer);
-            
-            if (request.find("OPTIONS") != std::string::npos) {
-                // Handle CORS preflight
-                const char* corsResponse = "HTTP/1.1 204 No Content\r\n"
-                                         "Access-Control-Allow-Origin: *\r\n"
-                                         "Access-Control-Allow-Methods: POST, OPTIONS\r\n"
-                                         "Access-Control-Allow-Headers: Content-Type\r\n"
-                                         "Connection: close\r\n\r\n";
-                send(clientSocket, corsResponse, strlen(corsResponse), 0);
-            }
-            else if (request.find("POST /send") != std::string::npos) {
-                size_t bodyPos = request.find("\r\n\r\n");
-                if (bodyPos != std::string::npos) {
-                    std::string body = request.substr(bodyPos + 4);
-                    
-                    obs_data_t* data = obs_data_create_from_json(body.c_str());
-                    if (data) {
-                        const char* addr = obs_data_get_string(data, "address");
-                        const char* fmt = obs_data_get_string(data, "format");
-                        obs_data_array_t* args = obs_data_get_array(data, "args");
-                        
-                        if (addr && fmt) {
-                            blog(LOG_INFO, "[OSC Server] Forwarding: %s %s", addr, fmt);
-                            SendOscRaw(addr, fmt, args);
-                        }
-                        
-                        obs_data_array_release(args);
-                        obs_data_release(data);
-                    }
-                }
-                
-                const char* response = "HTTP/1.1 200 OK\r\n"
-                                     "Content-Type: text/plain\r\n"
-                                     "Access-Control-Allow-Origin: *\r\n"
-                                     "Content-Length: 2\r\n"
-                                     "Connection: close\r\n\r\nok";
-                send(clientSocket, response, strlen(response), 0);
-            } else {
-                const char* response = "HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n";
-                send(clientSocket, response, strlen(response), 0);
-            }
-        }
+    struct sockaddr_in destAddr;
+    destAddr.sin_family = AF_INET;
+    destAddr.sin_port = htons(port);
+    destAddr.sin_addr.s_addr = inet_addr(ip.c_str());
+
+    sendto(sock, buffer, len, 0, (struct sockaddr*)&destAddr, sizeof(destAddr));
 #if defined(_WIN32) || defined(_WIN64)
-        closesocket(clientSocket);
+    closesocket(sock);
 #else
-        close(clientSocket);
+    close(sock);
 #endif
-    }
 }
 
 void OscManager::SendOscMessage(const std::string& address, const char* format, ...) {
     va_list ap;
     char buffer[4096];
     
+    va_start(ap, format);
+    uint32_t len = tosc_vwriteMessage(buffer, sizeof(buffer), address.c_str(), format, ap);
+    va_end(ap);
+
     std::lock_guard<std::mutex> lock(clientsMutex);
     for (const auto& client : clients) {
-        if (client.portOut <= 0) continue;
-
-        int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-        if (sock == INVALID_SOCKET) continue;
-
-        struct sockaddr_in destAddr;
-        destAddr.sin_family = AF_INET;
-        destAddr.sin_port = htons(client.portOut);
-        destAddr.sin_addr.s_addr = inet_addr(client.ip.c_str());
-
-        va_start(ap, format);
-        uint32_t len = tosc_vwriteMessage(buffer, sizeof(buffer), address.c_str(), format, ap);
-        va_end(ap);
-        
-        sendto(sock, buffer, len, 0, (struct sockaddr*)&destAddr, sizeof(destAddr));
-#if defined(_WIN32) || defined(_WIN64)
-        closesocket(sock);
-#else
-        close(sock);
-#endif
+        if (client.portOut > 0) {
+            SendToAddr(client.ip, client.portOut, buffer, len);
+        }
     }
 }
 
@@ -360,46 +348,30 @@ void OscManager::SendOscToClient(const std::string& clientName, const std::strin
     va_list ap;
     char buffer[4096];
     
+    va_start(ap, format);
+    uint32_t len = tosc_vwriteMessage(buffer, sizeof(buffer), address.c_str(), format, ap);
+    va_end(ap);
+
     std::lock_guard<std::mutex> lock(clientsMutex);
     for (const auto& client : clients) {
-        if (client.name != clientName || client.portOut <= 0) continue;
-
-        int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-        if (sock == INVALID_SOCKET) continue;
-
-        struct sockaddr_in destAddr;
-        destAddr.sin_family = AF_INET;
-        destAddr.sin_port = htons(client.portOut);
-        destAddr.sin_addr.s_addr = inet_addr(client.ip.c_str());
-
-        va_start(ap, format);
-        uint32_t len = tosc_vwriteMessage(buffer, sizeof(buffer), address.c_str(), format, ap);
-        va_end(ap);
-        
-        sendto(sock, buffer, len, 0, (struct sockaddr*)&destAddr, sizeof(destAddr));
-#if defined(_WIN32) || defined(_WIN64)
-        closesocket(sock);
-#else
-        close(sock);
-#endif
-        break;
+        if (client.name == clientName && client.portOut > 0) {
+            SendToAddr(client.ip, client.portOut, buffer, len);
+            break;
+        }
     }
 }
 
-void OscManager::SendOscRaw(const std::string& address, const std::string& format, struct obs_data_array* args) {
-    char buffer[4096];
-    memset(buffer, 0, sizeof(buffer));
-    
+static uint32_t PrepareRawBuffer(char* buffer, size_t bufSize, const std::string& address, const std::string& format, struct obs_data_array* args) {
     uint32_t i = (uint32_t)address.length();
-    if (i >= sizeof(buffer)) return;
+    if (i >= (uint32_t)bufSize) return 0;
     strcpy(buffer, address.c_str());
     i = (i + 4) & ~0x3;
     
     buffer[i++] = ',';
     int s_len = (int)format.length();
-    if (i + s_len >= (int)sizeof(buffer)) return;
+    if (i + (uint32_t)s_len >= (uint32_t)bufSize) return 0;
     strcpy(buffer + i, format.c_str());
-    i = (i + 4 + s_len) & ~0x3;
+    i = (i + 4 + (uint32_t)s_len) & ~0x3;
 
     size_t count = obs_data_array_count(args);
     for (int j = 0; j < (int)format.length() && (size_t)j < count; ++j) {
@@ -408,57 +380,65 @@ void OscManager::SendOscRaw(const std::string& address, const std::string& forma
 
         switch (format[j]) {
             case 'i': {
-                if (i + 4 > sizeof(buffer)) break;
+                if (i + 4 > (uint32_t)bufSize) break;
                 int32_t val = (int32_t)obs_data_get_int(item, "value");
                 *((uint32_t *)(buffer + i)) = (uint32_t)htonl(val);
                 i += 4;
                 break;
             }
             case 'f': {
-                if (i + 4 > sizeof(buffer)) break;
+                if (i + 4 > (uint32_t)bufSize) break;
                 float val = (float)obs_data_get_double(item, "value");
-                *((uint32_t *)(buffer + i)) = (uint32_t)htonl(*((uint32_t *)&val));
+                uint32_t uval;
+                memcpy(&uval, &val, 4);
+                *((uint32_t *)(buffer + i)) = (uint32_t)htonl(uval);
                 i += 4;
-                break;
-            }
-            case 'd': {
-                if (i + 8 > sizeof(buffer)) break;
-                double val = obs_data_get_double(item, "value");
-                *((uint64_t *)(buffer + i)) = (uint64_t)htonll(*((uint64_t *)&val));
-                i += 8;
                 break;
             }
             case 's': {
                 const char* s = obs_data_get_string(item, "value");
                 int slen = (int)strlen(s);
-                if (i + slen >= sizeof(buffer)) break;
+                if (i + (uint32_t)slen >= (uint32_t)bufSize) break;
                 strcpy(buffer + i, s);
-                i = (i + slen + 4) & ~0x3;
+                i = (i + (uint32_t)slen + 4) & ~0x3;
                 break;
             }
         }
         obs_data_release(item);
     }
+    return i;
+}
 
-    // Send to all clients
+void OscManager::SendOscRaw(const std::string& address, const std::string& format, struct obs_data_array* args) {
+    char buffer[4096];
+    uint32_t len = PrepareRawBuffer(buffer, sizeof(buffer), address, format, args);
+    if (len == 0) return;
+
     std::lock_guard<std::mutex> lock(clientsMutex);
     for (const auto& client : clients) {
-        if (client.portOut <= 0) continue;
+        if (client.portOut > 0) {
+            SendToAddr(client.ip, client.portOut, buffer, len);
+        }
+    }
+}
 
-        int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-        if (sock == INVALID_SOCKET) continue;
+void OscManager::SendOscToTarget(const std::string& target, const std::string& address, const std::string& format, struct obs_data_array* args) {
+    char buffer[4096];
+    uint32_t len = PrepareRawBuffer(buffer, sizeof(buffer), address, format, args);
+    if (len == 0) return;
 
-        struct sockaddr_in destAddr;
-        destAddr.sin_family = AF_INET;
-        destAddr.sin_port = htons(client.portOut);
-        destAddr.sin_addr.s_addr = inet_addr(client.ip.c_str());
+    int targetPort = 0;
+    try { targetPort = std::stoi(target); } catch (...) {}
 
-        sendto(sock, buffer, i, 0, (struct sockaddr*)&destAddr, sizeof(destAddr));
-#if defined(_WIN32) || defined(_WIN64)
-        closesocket(sock);
-#else
-        close(sock);
-#endif
+    std::lock_guard<std::mutex> lock(clientsMutex);
+    for (const auto& client : clients) {
+        bool match = false;
+        if (targetPort > 0 && client.portOut == targetPort) match = true;
+        else if (client.name == target) match = true;
+
+        if (match) {
+            SendToAddr(client.ip, client.portOut, buffer, len);
+        }
     }
 }
 
@@ -472,13 +452,15 @@ void OscManager::LoadConfig() {
     if (data) {
         const char* ip = obs_data_get_string(data, "server_ip");
         int port = (int)obs_data_get_int(data, "server_port");
-        int bPort = (int)obs_data_get_int(data, "bridge_port");
+        int mPort = (int)obs_data_get_int(data, "mongoose_port");
         const char* target = obs_data_get_string(data, "target_source");
         
         if (ip && *ip) serverIp = ip;
         if (port > 0) serverPort = port;
-        if (bPort > 0) httpPort = bPort;
+        if (mPort > 0) mongoosePort = mPort;
         if (target) targetSource = target;
+        autoStart = obs_data_get_bool(data, "auto_start");
+        logCollapsed = obs_data_get_bool(data, "log_collapsed");
 
         std::lock_guard<std::mutex> lock(clientsMutex);
         clients.clear();
@@ -492,6 +474,8 @@ void OscManager::LoadConfig() {
                 client.name = obs_data_get_string(clientData, "name");
                 client.ip = obs_data_get_string(clientData, "ip");
                 client.portOut = (int)obs_data_get_int(clientData, "portOut");
+                client.targetSource = obs_data_get_string(clientData, "targetSource");
+                if (client.targetSource.empty()) client.targetSource = "All Browser Sources";
                 clients.push_back(client);
                 obs_data_release(clientData);
             }
@@ -499,6 +483,45 @@ void OscManager::LoadConfig() {
         }
         obs_data_release(data);
     }
+}
+
+void OscManager::SaveConfig() {
+    char* configPath = obs_module_config_path("osc-server-settings.json");
+    if (!configPath) return;
+
+    // Ensure directory exists
+    std::string path(configPath);
+    size_t lastSlash = path.find_last_of("/\\");
+    if (lastSlash != std::string::npos) {
+        std::string dir = path.substr(0, lastSlash);
+        os_mkdir(dir.c_str());
+    }
+
+    obs_data_t* data = obs_data_create();
+    obs_data_set_string(data, "server_ip", serverIp.c_str());
+    obs_data_set_int(data, "server_port", serverPort);
+    obs_data_set_int(data, "mongoose_port", mongoosePort);
+    obs_data_set_string(data, "target_source", targetSource.c_str());
+    obs_data_set_bool(data, "auto_start", autoStart);
+    obs_data_set_bool(data, "log_collapsed", logCollapsed);
+
+    obs_data_array_t* clientsArray = obs_data_array_create();
+    std::lock_guard<std::mutex> lock(clientsMutex);
+    for (const auto& client : clients) {
+        obs_data_t* clientData = obs_data_create();
+        obs_data_set_string(clientData, "name", client.name.c_str());
+        obs_data_set_string(clientData, "ip", client.ip.c_str());
+        obs_data_set_int(clientData, "portOut", client.portOut);
+        obs_data_set_string(clientData, "targetSource", client.targetSource.c_str());
+        obs_data_array_push_back(clientsArray, clientData);
+        obs_data_release(clientData);
+    }
+    obs_data_set_array(data, "clients", clientsArray);
+    obs_data_array_release(clientsArray);
+
+    obs_data_save_json(data, configPath);
+    obs_data_release(data);
+    bfree(configPath);
 }
 
 OscManager& GetOscManager() {

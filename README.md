@@ -1,59 +1,80 @@
-# OBS Plugin Template
+# OSC Server Plugin for OBS Studio
 
-## Introduction
+A powerful, high-performance bridge for bidirectional OSC (Open Sound Control) and WebSocket communication within OBS Studio.
 
-The plugin template is meant to be used as a starting point for OBS Studio plugin development. It includes:
+## Features
 
-* Boilerplate plugin source code
-* A CMake project file
-* GitHub Actions workflows and repository actions
+- **Bidirectional OSC Support**: Send and receive OSC messages over UDP.
+- **Embedded WebSocket Server**: Built-in high-performance Mongoose server for direct communication with Browser Sources.
+- **Dynamic Routing**: Route incoming OSC messages from specific devices to selected Browser Sources by name or output port.
+- **Auto-Discovery Handshake**: Automatically broadcasts server details (IP, Port, Connected Devices) to all active browser overlays on startup.
+- **Persistent Configuration**: Save server settings, device lists, and UI states (like console collapse status) directly in OBS.
+- **Rich Settings UI**: Modern Qt-based interface with real-time status indicators and a live log console.
 
-## Supported Build Environments
+## Tech Stack
 
-| Platform  | Tool   |
-|-----------|--------|
-| Windows   | Visual Studio 17 2022 |
-| macOS     | XCode 16.0 |
-| Windows, macOS  | CMake 3.30.5 |
-| Ubuntu 24.04 | CMake 3.28.3 |
-| Ubuntu 24.04 | `ninja-build` |
-| Ubuntu 24.04 | `pkg-config`
-| Ubuntu 24.04 | `build-essential` |
+- **Core**: C++17
+- **Networking**: [Mongoose](https://github.com/cesanta/mongoose) (WebSockets/HTTP)
+- **OSC Protocol**: [tinyosc](https://github.com/v923z/tinyosc) (UDP)
+- **UI Framework**: Qt 6 (OBS standard)
+- **Build System**: CMake
 
-## Quick Start
+## Installation (Local Development)
 
-An absolute bare-bones [Quick Start Guide](https://github.com/obsproject/obs-plugintemplate/wiki/Quick-Start-Guide) is available in the wiki.
+To build and deploy the plugin locally on macOS:
 
-## Documentation
+1. Clone the repository.
+2. Run the deployment script:
+   ```bash
+   ./deploy_macos.sh
+   ```
+3. Restart OBS Studio.
+4. Open the settings via **Tools > OSC Server Settings**.
 
-All documentation can be found in the [Plugin Template Wiki](https://github.com/obsproject/obs-plugintemplate/wiki).
+## Browser Overlay Integration
 
-Suggested reading to get up and running:
+The plugin simplifies browser source communication using a dynamic handshake.
 
-* [Getting started](https://github.com/obsproject/obs-plugintemplate/wiki/Getting-Started)
-* [Build system requirements](https://github.com/obsproject/obs-plugintemplate/wiki/Build-System-Requirements)
-* [Build system options](https://github.com/obsproject/obs-plugintemplate/wiki/CMake-Build-System-Options)
+### 1. Connection Handshake
+On OBS startup (or when clicking "Send OSC details"), the plugin emits a `osc_server_details` event to all browser sources:
 
-## GitHub Actions & CI
+```javascript
+window.addEventListener('osc_server_details', (e) => {
+    const { ip, port, clients } = e.detail;
+    // Connect to ws://127.0.0.1:[port]/ws
+});
+```
 
-Default GitHub Actions workflows are available for the following repository actions:
+### 2. Receiving OSC
+Messages received via UDP are emitted to JavaScript via the `osc_message` event:
 
-* `push`: Run for commits or tags pushed to `master` or `main` branches.
-* `pr-pull`: Run when a Pull Request has been pushed or synchronized.
-* `dispatch`: Run when triggered by the workflow dispatch in GitHub's user interface.
-* `build-project`: Builds the actual project and is triggered by other workflows.
-* `check-format`: Checks CMake and plugin source code formatting and is triggered by other workflows.
+```javascript
+window.addEventListener('osc_message', (e) => {
+    const { client, address, args } = e.detail;
+    console.log(`Received ${address} from ${client}`);
+});
+```
 
-The workflows make use of GitHub repository actions (contained in `.github/actions`) and build scripts (contained in `.github/scripts`) which are not needed for local development, but might need to be adjusted if additional/different steps are required to build the plugin.
+### 3. Sending OSC
+Send JSON payloads to the WebSocket server to broadcast OSC to hardware devices:
 
-### Retrieving build artifacts
+```javascript
+const payload = {
+    address: "/filter/cutoff",
+    format: "f",
+    args: [{ value: 0.75 }],
+    target: "MyDevice" // Optional: route to specific device or port
+};
+ws.send(JSON.stringify(payload));
+```
 
-Successful builds on GitHub Actions will produce build artifacts that can be downloaded for testing. These artifacts are commonly simple archives and will not contain package installers or installation programs.
+## Settings Configuration
 
-### Building a Release
+- **OSC Server (UDP)**: Set the listener IP and Port for incoming hardware messages.
+- **Mongoose Server (TCP/WS)**: Configure the internal port for browser-to-plugin communication (default: 12347).
+- **OSC Devices**: Add specific hardware devices with their IP and Output Port. You can specify which browser source should receive messages from which device.
+- **Log Console**: A real-time monitor for all OSC and WebSocket traffic, with a collapsible UI for focus.
 
-To create a release, an appropriately named tag needs to be pushed to the `main`/`master` branch using semantic versioning (e.g., `12.3.4`, `23.4.5-beta2`). A draft release will be created on the associated repository with generated installer packages or installation programs attached as release artifacts.
+## License
 
-## Signing and Notarizing on macOS
-
-Basic concepts of codesigning and notarization on macOS are explained in the correspodning [Wiki article](https://github.com/obsproject/obs-plugintemplate/wiki/Codesigning-On-macOS) which has a specific section for the [GitHub Actions setup](https://github.com/obsproject/obs-plugintemplate/wiki/Codesigning-On-macOS#setting-up-code-signing-for-github-actions).
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
