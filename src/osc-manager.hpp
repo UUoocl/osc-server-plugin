@@ -6,6 +6,19 @@
 #include <thread>
 #include <atomic>
 #include <functional>
+
+#if defined(_WIN32) || defined(_WIN64)
+#include <winsock2.h>
+typedef SOCKET osc_socket_t;
+#else
+typedef int osc_socket_t;
+#ifndef INVALID_SOCKET
+#define INVALID_SOCKET -1
+#endif
+#ifndef SOCKET_ERROR
+#define SOCKET_ERROR -1
+#endif
+#endif
 #include "thirdparty/mongoose.h"
 
 struct OscClient {
@@ -81,7 +94,7 @@ private:
     
     std::string serverIp = "127.0.0.1";
     int serverPort = 12346;
-    int serverSocket = -1;
+    osc_socket_t serverSocket = INVALID_SOCKET;
 
     // Mongoose members
     std::atomic<bool> mongooseRunning{false};

@@ -10,24 +10,12 @@
 #include <thread>
 #include <atomic>
 
-#if defined(_WIN32) || defined(_WIN64)
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#pragma comment(lib, "ws2_32.lib")
-#else
+#if !defined(_WIN32) && !defined(_WIN64)
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <fcntl.h>
-#endif
-
-#ifndef INVALID_SOCKET
-#define INVALID_SOCKET -1
-#endif
-
-#ifndef SOCKET_ERROR
-#define SOCKET_ERROR -1
 #endif
 
 // Mongoose event handler
@@ -176,8 +164,8 @@ void OscManager::MongooseThread() {
 }
 
 bool OscManager::IsPortAvailable(int port) {
-    int sock = socket(AF_INET, SOCK_STREAM, 0);
-    if (sock == -1) return false;
+    osc_socket_t sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock == INVALID_SOCKET) return false;
     
     sockaddr_in addr;
     addr.sin_family = AF_INET;
@@ -312,7 +300,7 @@ void OscManager::ListenerThread() {
 }
 
 void OscManager::SendToAddr(const std::string& ip, int port, const char* buffer, uint32_t len) {
-    int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    osc_socket_t sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (sock == INVALID_SOCKET) return;
 
     struct sockaddr_in destAddr;
