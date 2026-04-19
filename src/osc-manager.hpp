@@ -8,6 +8,9 @@
 #include <functional>
 
 #if defined(_WIN32) || defined(_WIN64)
+#ifndef _WINSOCK_DEPRECATED_NO_WARNINGS
+#define _WINSOCK_DEPRECATED_NO_WARNINGS
+#endif
 #include <winsock2.h>
 typedef SOCKET osc_socket_t;
 #else
