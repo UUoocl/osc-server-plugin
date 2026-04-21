@@ -22,13 +22,11 @@ typedef int osc_socket_t;
 #define SOCKET_ERROR -1
 #endif
 #endif
-#include "thirdparty/mongoose.h"
 
 struct OscClient {
 	std::string name;
 	std::string ip;
-	int portOut;                                      // Port to send OSC to device
-	std::string targetSource = "All Browser Sources"; // Target browser source for this device
+	int portOut; // Port to send OSC to device
 };
 
 class OscManager {
@@ -42,13 +40,6 @@ public:
 	bool IsServerRunning() const { return running; }
 	int GetServerPort() const { return serverPort; }
 	std::string GetServerIp() const { return serverIp; }
-
-	// Mongoose Webserver control
-	void StartMongoose(int port);
-	void StopMongoose();
-	bool IsMongooseRunning() const { return mongooseRunning; }
-	int GetMongoosePort() const { return mongoosePort; }
-	void SetMongoosePort(int port) { mongoosePort = port; }
 
 	void SetAutoStart(bool enable) { autoStart = enable; }
 	bool GetAutoStart() const { return autoStart; }
@@ -68,15 +59,14 @@ public:
 			     struct obs_data_array *args);
 
 	// Callback for when an OSC message is received
-	using OscMessageCallback = std::function<void(const std::string &clientName, const std::string &address,
-						      const std::string &jsonArgs, const std::string &target)>;
+	using OscMessageCallback =
+		std::function<void(const std::string &clientName, const std::string &address, const std::string &jsonArgs)>;
 	void SetMessageCallback(OscMessageCallback cb) { messageCallback = cb; }
 
 	void LoadConfig();
 	void SaveConfig();
 
-	void SetTargetSource(const std::string &name) { targetSource = name; }
-	std::string GetTargetSource() const { return targetSource; }
+
 
 	using OscLogCallback = std::function<void(const std::string &msg)>;
 	void SetLogCallback(OscLogCallback cb) { logCallback = cb; }
@@ -91,7 +81,6 @@ public:
 
 private:
 	void ListenerThread();
-	void MongooseThread();
 	void SendToAddr(const std::string &ip, int port, const char *buffer, uint32_t len);
 
 	std::atomic<bool> running{false};
@@ -101,14 +90,7 @@ private:
 	int serverPort = 12346;
 	osc_socket_t serverSocket = INVALID_SOCKET;
 
-	// Mongoose members
-	std::atomic<bool> mongooseRunning{false};
-	std::atomic<int> mongoosePort{12347};
-	std::thread mongooseThread;
-	struct mg_mgr mgr;
-	struct mg_connection *mg_conn = nullptr;
 
-	std::string targetSource = "";
 
 	std::vector<OscClient> clients;
 	mutable std::mutex clientsMutex;

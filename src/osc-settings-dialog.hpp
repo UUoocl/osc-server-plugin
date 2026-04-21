@@ -21,8 +21,7 @@ class OscClientRow : public QFrame {
 public:
 	OscClientRow(const OscClient &client, QWidget *parent = nullptr);
 	OscClient getClient() const;
-	void updateSources(const QStringList &sources);
-	void setTarget(const QString &target);
+
 
 signals:
 	void removed();
@@ -31,7 +30,7 @@ private:
 	QLineEdit *nameEdit;
 	QLineEdit *ipEdit;
 	QSpinBox *portOutSpin;
-	QComboBox *targetSourceCombo;
+
 	QPushButton *removeBtn;
 };
 
@@ -43,7 +42,6 @@ public:
 
 private slots:
 	void onStartStop();
-	void onStartStopMongoose();
 	void onAddClient();
 	void onSave();
 	void onRefreshStatus();
@@ -53,25 +51,18 @@ private:
 	void loadSettings();
 	void saveSettings();
 	void setupUi();
-	void populateSources();
+
 	void applyStyles();
 	void addLogMessage(const QString &msg);
 
 	QLineEdit *serverIpEdit;
 	QSpinBox *serverPortSpin;
 	QCheckBox *autoStartCheck;
-	QPushButton *emitDetailsBtn;
 
 	QWidget *logContentWidget;
 	QPushButton *toggleLogBtn;
 
-	// Mongoose settings
-	QSpinBox *mongoosePortSpin;
-	QPushButton *startStopMongooseBtn;
-	QLabel *mongooseStatusLabel;
-	QFrame *mongooseStatusDot;
 
-	QComboBox *targetSourceCombo;
 
 	QPlainTextEdit *logEdit;
 	QCheckBox *logCheck;

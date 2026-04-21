@@ -49,14 +49,8 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
   src/osc-manager.cpp
   src/osc-settings-dialog.cpp
   src/thirdparty/tinyosc.c
-  src/thirdparty/mongoose.c
 )
 
-if(APPLE)
-  set_source_files_properties(src/thirdparty/mongoose.c PROPERTIES COMPILE_FLAGS "-w")
-elseif(MSVC)
-  set_source_files_properties(src/thirdparty/mongoose.c PROPERTIES COMPILE_FLAGS "/W0")
-endif()
 
 set(WrapOpenGL_AGL "/System/Library/Frameworks/OpenGL.framework" CACHE FILEPATH "" FORCE)
 set(OPENGL_agl_LIBRARY "/System/Library/Frameworks/OpenGL.framework" CACHE FILEPATH "" FORCE)

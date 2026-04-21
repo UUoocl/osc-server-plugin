@@ -1,6 +1,5 @@
 #include "osc-manager.hpp"
 #include "thirdparty/tinyosc.h"
-#include "thirdparty/mongoose.h"
 #include <obs-module.h>
 #include <obs.h>
 #include <util/platform.h>
@@ -18,40 +17,6 @@
 #include <fcntl.h>
 #endif
 
-// Mongoose event handler
-static void mongoose_fn(struct mg_connection *c, int ev, void *ev_data)
-{
-	if (ev == MG_EV_HTTP_MSG) {
-		struct mg_http_message *hm = (struct mg_http_message *)ev_data;
-		if (mg_match(hm->uri, mg_str("/ws"), NULL)) {
-			mg_ws_upgrade(c, hm, NULL);
-		} else if (mg_match(hm->uri, mg_str("/health"), NULL)) {
-			mg_http_reply(c, 200, "", "ok");
-		}
-	} else if (ev == MG_EV_WS_MSG) {
-		struct mg_ws_message *wm = (struct mg_ws_message *)ev_data;
-		std::string msg(wm->data.buf, wm->data.len);
-
-		obs_data_t *data = obs_data_create_from_json(msg.c_str());
-		if (data) {
-			const char *address = obs_data_get_string(data, "address");
-			const char *format = obs_data_get_string(data, "format");
-			obs_data_array_t *args = obs_data_get_array(data, "args");
-			const char *target = obs_data_get_string(data, "target");
-
-			if (address && format) {
-				if (target && *target) {
-					GetOscManager().SendOscToTarget(target, address, format, args);
-				} else {
-					GetOscManager().SendOscRaw(address, format, args);
-				}
-			}
-
-			obs_data_array_release(args);
-			obs_data_release(data);
-		}
-	}
-}
 
 OscManager::OscManager()
 {
@@ -64,7 +29,6 @@ OscManager::OscManager()
 OscManager::~OscManager()
 {
 	StopServer();
-	StopMongoose();
 #if defined(_WIN32) || defined(_WIN64)
 	WSACleanup();
 #endif
@@ -136,48 +100,6 @@ void OscManager::StopServer()
 	blog(LOG_INFO, "[OSC Server] Stopped");
 }
 
-void OscManager::StartMongoose(int port)
-{
-	if (mongooseRunning)
-		StopMongoose();
-
-	mongoosePort = port;
-	mg_mgr_init(&mgr);
-
-	char url[64];
-	snprintf(url, sizeof(url), "http://127.0.0.1:%d", port);
-
-	mg_conn = mg_http_listen(&mgr, url, mongoose_fn, NULL);
-	if (!mg_conn) {
-		blog(LOG_ERROR, "[OSC Server] Mongoose failed to listen on %s", url);
-		mg_mgr_free(&mgr);
-		return;
-	}
-
-	mongooseRunning = true;
-	mongooseThread = std::thread(&OscManager::MongooseThread, this);
-	blog(LOG_INFO, "[OSC Server] Mongoose started on %s", url);
-}
-
-void OscManager::StopMongoose()
-{
-	if (!mongooseRunning)
-		return;
-	mongooseRunning = false;
-
-	if (mongooseThread.joinable())
-		mongooseThread.join();
-
-	mg_mgr_free(&mgr);
-	blog(LOG_INFO, "[OSC Server] Mongoose stopped");
-}
-
-void OscManager::MongooseThread()
-{
-	while (mongooseRunning) {
-		mg_mgr_poll(&mgr, 100);
-	}
-}
 
 bool OscManager::IsPortAvailable(int port)
 {
@@ -246,7 +168,6 @@ void OscManager::ListenerThread()
 		}
 
 		std::string clientName = "";
-		std::string clientTarget = "All Browser Sources";
 		char ipStr[INET_ADDRSTRLEN];
 		inet_ntop(AF_INET, &clientAddr.sin_addr, ipStr, INET_ADDRSTRLEN);
 		int port = ntohs(clientAddr.sin_port);
@@ -256,7 +177,6 @@ void OscManager::ListenerThread()
 			for (const auto &client : clients) {
 				if (client.ip == ipStr && client.portOut == port) {
 					clientName = client.name;
-					clientTarget = client.targetSource;
 					break;
 				}
 			}
@@ -280,25 +200,24 @@ void OscManager::ListenerThread()
 						jsonArgs += ",";
 					switch (fmt[i]) {
 					case 'i':
-						jsonArgs += std::to_string(tosc_getNextInt32(&msg));
+						jsonArgs += "{\"value\":" + std::to_string(tosc_getNextInt32(&msg)) + "}";
 						break;
 					case 'f':
-						jsonArgs += std::to_string(tosc_getNextFloat(&msg));
+						jsonArgs += "{\"value\":" + std::to_string(tosc_getNextFloat(&msg)) + "}";
 						break;
 					case 's':
-						jsonArgs += "\"" + std::string(tosc_getNextString(&msg)) + "\"";
+						jsonArgs += "{\"value\":\"" + std::string(tosc_getNextString(&msg)) + "\"}";
 						break;
 					}
 				}
 				jsonArgs += "]";
 
 				if (messageCallback) {
-					messageCallback(clientName, addr, jsonArgs, clientTarget);
+					messageCallback(clientName, addr, jsonArgs);
 				}
 
 				if (loggingEnabled && logCallback) {
-					std::string logMsg =
-						"[" + clientName + "] " + addr + " " + jsonArgs + " -> " + clientTarget;
+					std::string logMsg = "[" + clientName + "] " + addr + " " + jsonArgs;
 					logCallback(logMsg);
 				}
 			}
@@ -313,25 +232,24 @@ void OscManager::ListenerThread()
 						jsonArgs += ",";
 					switch (fmt[i]) {
 					case 'i':
-						jsonArgs += std::to_string(tosc_getNextInt32(&msg));
+						jsonArgs += "{\"value\":" + std::to_string(tosc_getNextInt32(&msg)) + "}";
 						break;
 					case 'f':
-						jsonArgs += std::to_string(tosc_getNextFloat(&msg));
+						jsonArgs += "{\"value\":" + std::to_string(tosc_getNextFloat(&msg)) + "}";
 						break;
 					case 's':
-						jsonArgs += "\"" + std::string(tosc_getNextString(&msg)) + "\"";
+						jsonArgs += "{\"value\":\"" + std::string(tosc_getNextString(&msg)) + "\"}";
 						break;
 					}
 				}
 				jsonArgs += "]";
 
 				if (messageCallback) {
-					messageCallback(clientName, addr, jsonArgs, clientTarget);
+					messageCallback(clientName, addr, jsonArgs);
 				}
 
 				if (loggingEnabled && logCallback) {
-					std::string logMsg =
-						"[" + clientName + "] " + addr + " " + jsonArgs + " -> " + clientTarget;
+					std::string logMsg = "[" + clientName + "] " + addr + " " + jsonArgs;
 					logCallback(logMsg);
 				}
 			}
@@ -504,17 +422,12 @@ void OscManager::LoadConfig()
 	if (data) {
 		const char *ip = obs_data_get_string(data, "server_ip");
 		int port = (int)obs_data_get_int(data, "server_port");
-		int mPort = (int)obs_data_get_int(data, "mongoose_port");
-		const char *target = obs_data_get_string(data, "target_source");
+
 
 		if (ip && *ip)
 			serverIp = ip;
 		if (port > 0)
 			serverPort = port;
-		if (mPort > 0)
-			mongoosePort = mPort;
-		if (target)
-			targetSource = target;
 		autoStart = obs_data_get_bool(data, "auto_start");
 		logCollapsed = obs_data_get_bool(data, "log_collapsed");
 
@@ -530,9 +443,6 @@ void OscManager::LoadConfig()
 				client.name = obs_data_get_string(clientData, "name");
 				client.ip = obs_data_get_string(clientData, "ip");
 				client.portOut = (int)obs_data_get_int(clientData, "portOut");
-				client.targetSource = obs_data_get_string(clientData, "targetSource");
-				if (client.targetSource.empty())
-					client.targetSource = "All Browser Sources";
 				clients.push_back(client);
 				obs_data_release(clientData);
 			}
@@ -559,8 +469,6 @@ void OscManager::SaveConfig()
 	obs_data_t *data = obs_data_create();
 	obs_data_set_string(data, "server_ip", serverIp.c_str());
 	obs_data_set_int(data, "server_port", serverPort);
-	obs_data_set_int(data, "mongoose_port", mongoosePort);
-	obs_data_set_string(data, "target_source", targetSource.c_str());
 	obs_data_set_bool(data, "auto_start", autoStart);
 	obs_data_set_bool(data, "log_collapsed", logCollapsed);
 
@@ -571,7 +479,6 @@ void OscManager::SaveConfig()
 		obs_data_set_string(clientData, "name", client.name.c_str());
 		obs_data_set_string(clientData, "ip", client.ip.c_str());
 		obs_data_set_int(clientData, "portOut", client.portOut);
-		obs_data_set_string(clientData, "targetSource", client.targetSource.c_str());
 		obs_data_array_push_back(clientsArray, clientData);
 		obs_data_release(clientData);
 	}
