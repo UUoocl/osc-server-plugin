@@ -125,6 +125,11 @@ void OscSettingsDialog::setupUi()
 	autoStartCheck = new QCheckBox("Start server on OBS launch");
 	serverLay->addWidget(autoStartCheck);
 
+	broadcastGeneralCheck = new QCheckBox("Allow general OSC messages (Topic: 'osc')");
+	broadcastByDeviceCheck = new QCheckBox("Allow device-specific routing (Topic: 'osc/[device-name]')");
+	serverLay->addWidget(broadcastGeneralCheck);
+	serverLay->addWidget(broadcastByDeviceCheck);
+
 	QHBoxLayout *oscStatusLay = new QHBoxLayout();
 	statusDot = new QFrame();
 	statusDot->setFixedSize(10, 10);
@@ -300,6 +305,8 @@ void OscSettingsDialog::loadSettings()
 
 	logCheck->setChecked(mgr.IsLoggingEnabled());
 	autoStartCheck->setChecked(mgr.GetAutoStart());
+	broadcastGeneralCheck->setChecked(mgr.ShouldBroadcastGeneral());
+	broadcastByDeviceCheck->setChecked(mgr.ShouldBroadcastByDevice());
 
 	bool collapsed = mgr.IsLogCollapsed();
 	logContentWidget->setVisible(!collapsed);
@@ -335,6 +342,8 @@ void OscSettingsDialog::saveSettings()
 	mgr.SetServerConfig(serverIpEdit->text().toStdString(), serverPortSpin->value());
 	mgr.SetAutoStart(autoStartCheck->isChecked());
 	mgr.EnableLogging(logCheck->isChecked());
+	mgr.SetBroadcastGeneral(broadcastGeneralCheck->isChecked());
+	mgr.SetBroadcastByDevice(broadcastByDeviceCheck->isChecked());
 
 	mgr.SaveConfig();
 }

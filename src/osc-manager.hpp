@@ -44,6 +44,12 @@ public:
 	void SetAutoStart(bool enable) { autoStart = enable; }
 	bool GetAutoStart() const { return autoStart; }
 
+	void SetBroadcastGeneral(bool enable) { broadcastGeneral = enable; }
+	bool ShouldBroadcastGeneral() const { return broadcastGeneral; }
+
+	void SetBroadcastByDevice(bool enable) { broadcastByDevice = enable; }
+	bool ShouldBroadcastByDevice() const { return broadcastByDevice; }
+
 	void AddClient(const OscClient &client);
 	void RemoveClient(const std::string &name);
 	std::vector<OscClient> GetClients();
@@ -60,7 +66,7 @@ public:
 
 	// Callback for when an OSC message is received
 	using OscMessageCallback =
-		std::function<void(const std::string &clientName, const std::string &address, const std::string &jsonArgs)>;
+		std::function<void(const std::string &clientName, const std::string &address, struct obs_data_array *args)>;
 	void SetMessageCallback(OscMessageCallback cb) { messageCallback = cb; }
 
 	void LoadConfig();
@@ -100,6 +106,8 @@ private:
 	std::atomic<bool> loggingEnabled{false};
 	std::atomic<bool> autoStart{false};
 	std::atomic<bool> logCollapsed{false};
+	std::atomic<bool> broadcastGeneral{true};
+	std::atomic<bool> broadcastByDevice{true};
 };
 
 OscManager &GetOscManager();

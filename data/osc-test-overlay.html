@@ -165,6 +165,9 @@
         let wsPort = null;
         const logEl = document.getElementById('log');
 
+        const urlParams = new URLSearchParams(window.location.search);
+        const topic = urlParams.get('topic') || 'osc/default';
+
         function appendLog(msg, color = null) {
             const item = document.createElement('div');
             item.className = 'log-item';
@@ -174,48 +177,48 @@
             if (logEl.childNodes.length > 100) logEl.removeChild(logEl.lastChild);
         }
 
-        async function discoverAndConnect() {
-            try {
-                const response = await fetch('/__lws/ws_port');
-                if (!response.ok) throw new Error('Failed to fetch port');
-                wsPort = await response.text();
-                connect(wsPort);
-            } catch (err) {
-                console.error("Discovery error:", err);
-                appendLog("Discovery failed, retrying in 5s...", "#f38ba8");
-                setTimeout(discoverAndConnect, 5000);
-            }
-        }
-
-        function connect(port) {
+        function connect() {
             if (ws) ws.close();
 
-            const url = `ws://127.0.0.1:${port}/ws`;
+            const port = window.location.port || '4466';
+            const url = `ws://127.0.0.1:${port}/ws/${topic}`;
             ws = new WebSocket(url);
 
             ws.onopen = () => {
                 document.getElementById('ws-status').textContent = `WS: Connected (${port})`;
                 document.getElementById('ws-status').style.color = '#a6e3a1';
-                document.getElementById('server-info').textContent = `Bridge: ws://127.0.0.1:${port}/ws`;
-                appendLog(`Connected to Media Warp Bridge on port ${port}`, '#a6e3a1');
+                document.getElementById('server-info').textContent = `Topic: ${topic} | Bridge: ws://127.0.0.1:${port}/ws/${topic}`;
+                appendLog(`Connected to Media Warp Bridge on topic: ${topic}`, '#a6e3a1');
             };
 
             ws.onmessage = (e) => {
                 try {
                     const data = JSON.parse(e.data);
                     if (data.a === 'osc_message') {
-                        console.log(e);
-                        const timestamp = new Date().toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
-                        const argsDisplay = (data.args || []).map(a => a.value !== undefined ? a.value : JSON.stringify(a)).join(', ');
-                        const item = document.createElement('div');
-                        item.className = 'log-item';
-                        item.innerHTML = `<span style="color: #6c7086">[${timestamp}]</span> ` +
-                            `<span class="log-client">[${data.client || '?'}]</span> ` +
-                            `<span class="log-addr">${data.address || '/'}</span> ` +
-                            `<span class="log-args">[${argsDisplay}]</span>`;
-
-                        logEl.prepend(item);
-                        if (logEl.childNodes.length > 100) logEl.removeChild(logEl.lastChild);
+                        const addr = data.address || 'unknown';
+                        const args = data.args || [];
+                        const client = data.client || 'unknown';
+                        
+                        const time = new Date().toLocaleTimeString();
+                        const argsText = args.map(arg => {
+                            if (typeof arg.value === 'number') return arg.value.toFixed(3);
+                            return arg.value;
+                        }).join(', ');
+                        
+                        const entry = document.createElement('div');
+                        entry.className = 'log-item';
+                        entry.innerHTML = `
+                            <span style="color: #6c7086">[${time}]</span> 
+                            <span class="log-client">[${client}]</span> 
+                            <span class="log-addr">${addr}</span> 
+                            <span class="log-args">[${argsText}]</span>
+                        `;
+                        
+                        logEl.insertBefore(entry, logEl.firstChild);
+                        
+                        while (logEl.children.length > 100) {
+                            logEl.removeChild(logEl.lastChild);
+                        }
                     }
                 } catch (err) {
                     console.error("Parse error:", err);
@@ -226,7 +229,7 @@
                 document.getElementById('ws-status').textContent = "WS: Disconnected";
                 document.getElementById('ws-status').style.color = '#f38ba8';
                 appendLog("WebSocket disconnected, retrying in 5s...", '#f38ba8');
-                setTimeout(discoverAndConnect, 5000);
+                setTimeout(connect, 5000);
             };
 
             ws.onerror = (err) => {
@@ -234,8 +237,8 @@
             };
         }
 
-        // Start discovery
-        discoverAndConnect();
+        // Start connection
+        connect();
 
         function sendOsc() {
             if (!ws || ws.readyState !== WebSocket.OPEN) {

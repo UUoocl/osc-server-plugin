@@ -14,16 +14,49 @@ OBS_MODULE_USE_DEFAULT_LOCALE("osc-server", "en-US")
 static QPointer<OscSettingsDialog> settingsDialog;
 
 // Bridge OSC to Bridge (WebSocket)
-void HandleOscToBridge(const std::string &clientName, const std::string &address, const std::string &jsonArgs)
+void HandleOscToBridge(const std::string &clientName, const std::string &address, struct obs_data_array *args)
 {
-	// Build JSON packet for the bridge
-	// Format: {"a": "osc_message", "client": "...", "address": "...", "args": [...]}
-	std::string finalJson = "{\"a\":\"osc_message\", \"client\":\"" + clientName + "\", \"address\":\"" +
-				address + "\", \"args\":" + jsonArgs + "}";
+	auto &mgr = GetOscManager();
+	signal_handler_t *sh = obs_get_signal_handler();
+	if (!sh) return;
 
-	obs_data_t *packet = obs_data_create_from_json(finalJson.c_str());
-	if (packet) {
-		signal_handler_t *sh = obs_get_signal_handler();
+	// Broadcast to device topic
+	if (mgr.ShouldBroadcastByDevice()) {
+		std::string deviceTopic = "osc/" + clientName;
+		
+		obs_data_t *packet = obs_data_create();
+		obs_data_set_string(packet, "t", deviceTopic.c_str());
+		obs_data_set_string(packet, "a", "osc_message");
+		obs_data_set_string(packet, "client", clientName.c_str());
+		obs_data_set_string(packet, "address", address.c_str());
+		
+		if (args) {
+			obs_data_set_array(packet, "args", args);
+		}
+
+		blog(LOG_DEBUG, "[OSC Server] Bridge Signal: topic=%s addr=%s", deviceTopic.c_str(), address.c_str());
+		
+		calldata_t cd = {0};
+		calldata_set_ptr(&cd, "packet", packet);
+		signal_handler_signal(sh, "media_warp_transmit", &cd);
+		calldata_free(&cd);
+		obs_data_release(packet);
+	}
+
+	// Broadcast to general topic
+	if (mgr.ShouldBroadcastGeneral()) {
+		obs_data_t *packet = obs_data_create();
+		obs_data_set_string(packet, "t", "osc");
+		obs_data_set_string(packet, "a", "osc_message");
+		obs_data_set_string(packet, "client", clientName.c_str());
+		obs_data_set_string(packet, "address", address.c_str());
+		
+		if (args) {
+			obs_data_set_array(packet, "args", args);
+		}
+
+		blog(LOG_DEBUG, "[OSC Server] Bridge Signal: topic=osc addr=%s", address.c_str());
+
 		calldata_t cd = {0};
 		calldata_set_ptr(&cd, "packet", packet);
 		signal_handler_signal(sh, "media_warp_transmit", &cd);
@@ -60,7 +93,7 @@ static void on_media_warp_receive(void *data, calldata_t *cd)
 
 bool obs_module_load(void)
 {
-	blog(LOG_INFO, "[OSC Server] Plugin loading...");
+	blog(LOG_DEBUG, "[OSC Server] Plugin loading...");
 
 	auto &mgr = GetOscManager();
 	mgr.LoadConfig();

@@ -192,66 +192,68 @@ void OscManager::ListenerThread()
 			tosc_message msg;
 			while (tosc_getNextMessage(&bundle, &msg)) {
 				std::string addr = tosc_getAddress(&msg);
-				std::string jsonArgs = "[";
+				obs_data_array_t *args = obs_data_array_create();
 				tosc_reset(&msg);
 				char *fmt = tosc_getFormat(&msg);
 				for (int i = 0; fmt[i] != '\0'; ++i) {
-					if (i > 0)
-						jsonArgs += ",";
+					obs_data_t *item = obs_data_create();
 					switch (fmt[i]) {
 					case 'i':
-						jsonArgs += "{\"value\":" + std::to_string(tosc_getNextInt32(&msg)) + "}";
+						obs_data_set_int(item, "value", tosc_getNextInt32(&msg));
 						break;
 					case 'f':
-						jsonArgs += "{\"value\":" + std::to_string(tosc_getNextFloat(&msg)) + "}";
+						obs_data_set_double(item, "value", (double)tosc_getNextFloat(&msg));
 						break;
 					case 's':
-						jsonArgs += "{\"value\":\"" + std::string(tosc_getNextString(&msg)) + "\"}";
+						obs_data_set_string(item, "value", tosc_getNextString(&msg));
 						break;
 					}
+					obs_data_array_push_back(args, item);
+					obs_data_release(item);
 				}
-				jsonArgs += "]";
 
 				if (messageCallback) {
-					messageCallback(clientName, addr, jsonArgs);
+					messageCallback(clientName, addr, args);
 				}
 
 				if (loggingEnabled && logCallback) {
-					std::string logMsg = "[" + clientName + "] " + addr + " " + jsonArgs;
+					std::string logMsg = "[" + clientName + "] " + addr + " (" + std::to_string(obs_data_array_count(args)) + " args)";
 					logCallback(logMsg);
 				}
+				obs_data_array_release(args);
 			}
 		} else {
 			tosc_message msg;
 			if (tosc_parseMessage(&msg, buffer, bytesRead) == 0) {
 				std::string addr = tosc_getAddress(&msg);
-				std::string jsonArgs = "[";
+				obs_data_array_t *args = obs_data_array_create();
 				char *fmt = tosc_getFormat(&msg);
 				for (int i = 0; fmt[i] != '\0'; ++i) {
-					if (i > 0)
-						jsonArgs += ",";
+					obs_data_t *item = obs_data_create();
 					switch (fmt[i]) {
 					case 'i':
-						jsonArgs += "{\"value\":" + std::to_string(tosc_getNextInt32(&msg)) + "}";
+						obs_data_set_int(item, "value", tosc_getNextInt32(&msg));
 						break;
 					case 'f':
-						jsonArgs += "{\"value\":" + std::to_string(tosc_getNextFloat(&msg)) + "}";
+						obs_data_set_double(item, "value", (double)tosc_getNextFloat(&msg));
 						break;
 					case 's':
-						jsonArgs += "{\"value\":\"" + std::string(tosc_getNextString(&msg)) + "\"}";
+						obs_data_set_string(item, "value", tosc_getNextString(&msg));
 						break;
 					}
+					obs_data_array_push_back(args, item);
+					obs_data_release(item);
 				}
-				jsonArgs += "]";
 
 				if (messageCallback) {
-					messageCallback(clientName, addr, jsonArgs);
+					messageCallback(clientName, addr, args);
 				}
 
 				if (loggingEnabled && logCallback) {
-					std::string logMsg = "[" + clientName + "] " + addr + " " + jsonArgs;
+					std::string logMsg = "[" + clientName + "] " + addr + " (" + std::to_string(obs_data_array_count(args)) + " args)";
 					logCallback(logMsg);
 				}
+				obs_data_array_release(args);
 			}
 		}
 	}
@@ -431,6 +433,13 @@ void OscManager::LoadConfig()
 		autoStart = obs_data_get_bool(data, "auto_start");
 		logCollapsed = obs_data_get_bool(data, "log_collapsed");
 
+		broadcastGeneral = obs_data_get_bool(data, "broadcast_general");
+		broadcastByDevice = obs_data_get_bool(data, "broadcast_by_device");
+		
+		// Defaults if not set (first run)
+		if (!obs_data_has_user_value(data, "broadcast_general")) broadcastGeneral = true;
+		if (!obs_data_has_user_value(data, "broadcast_by_device")) broadcastByDevice = true;
+
 		std::lock_guard<std::mutex> lock(clientsMutex);
 		clients.clear();
 
@@ -471,6 +480,8 @@ void OscManager::SaveConfig()
 	obs_data_set_int(data, "server_port", serverPort);
 	obs_data_set_bool(data, "auto_start", autoStart);
 	obs_data_set_bool(data, "log_collapsed", logCollapsed);
+	obs_data_set_bool(data, "broadcast_general", broadcastGeneral);
+	obs_data_set_bool(data, "broadcast_by_device", broadcastByDevice);
 
 	obs_data_array_t *clientsArray = obs_data_array_create();
 	std::lock_guard<std::mutex> lock(clientsMutex);

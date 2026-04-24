@@ -58,6 +58,8 @@ private:
 	QLineEdit *serverIpEdit;
 	QSpinBox *serverPortSpin;
 	QCheckBox *autoStartCheck;
+	QCheckBox *broadcastGeneralCheck;
+	QCheckBox *broadcastByDeviceCheck;
 
 	QWidget *logContentWidget;
 	QPushButton *toggleLogBtn;
